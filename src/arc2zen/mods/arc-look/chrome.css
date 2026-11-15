@@ -1,0 +1,205 @@
+/* Arc Look: Zen interface tweaks towards Arc.
+   Each part has its own switch in the mod settings. */
+
+/* Container line of vertical tabs on the left instead of the right.
+   tabs.css gives .tab-background flex-direction: row-reverse just for this line. */
+@media -moz-pref("mod.arclook.container-line-left") {
+  #tabbrowser-tabs[orient="vertical"] .tabbrowser-tab .tab-background {
+    flex-direction: row !important;
+  }
+}
+
+/* Essentials need no container line: the space already tells the container. */
+@media -moz-pref("mod.arclook.hide-essential-container-line") {
+  .tabbrowser-tab[zen-essential] .tab-context-line {
+    display: none !important;
+  }
+}
+
+/* A 32px top bar, as in Arc. */
+@media -moz-pref("mod.arclook.compact-toolbar") {
+  :root {
+    --zen-toolbar-height: 32px !important;
+  }
+  #urlbar {
+    --urlbar-min-height: 26px !important;
+  }
+}
+
+/* Arc-like address bar: as wide as the URL plus its side buttons, up to a set
+   maximum, centered in the bar, in a small font (grey when unfocused); the field
+   background shows only on hover (Zen draws that highlight) and on focus. */
+@media -moz-pref("mod.arclook.urlbar") {
+  /* Zen makes #urlbar-container a container-query container (inline-size), which
+     stops it from shrinking to its content, so that is turned off. The rule also
+     applies on focus so the field does not jump on click. */
+  #nav-bar #urlbar-container {
+    flex: 0 1 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: var(--mod-arclook-urlbar-max-width, 640px) !important;
+    container-type: normal !important;
+    /* Zen's floating address bar (zen-floating-urlbar) is left alone: it has its
+       own width and the regular font. */
+    & #urlbar:not([zen-floating-urlbar="true"]) {
+      flex: 0 1 auto !important;
+      width: auto !important;
+      & #urlbar-input-container {
+        width: auto !important;
+      }
+      & .urlbar-input-box {
+        flex: 0 1 auto !important;
+      }
+      & #urlbar-input {
+        /* Same font with and without focus; otherwise the text widens on focus and the field grows. */
+        font-size: 12px !important;
+        field-sizing: content !important;
+        flex: 0 1 auto !important;
+        min-width: 2ch !important;
+        max-width: 100% !important;
+        padding-inline-end: 6px !important;
+      }
+    }
+  }
+
+  /* The address bar used to take the free space (flex: 400). Now the springs on
+     both sides share it; Zen caps them at max-width 112px, which is lifted, or the
+     extension icons drift to the middle. */
+  #nav-bar toolbarspring {
+    max-width: none !important;
+    flex: 1 1 0 !important;
+  }
+
+  #urlbar:not([focused], [breakout-extend]) {
+    &:not(:hover) .urlbar-background {
+      background: transparent !important;
+    }
+    .urlbar-input {
+      text-align: center !important;
+      color: color-mix(in srgb, currentColor 65%, transparent) !important;
+    }
+  }
+}
+
+/* Arc-like Peek (Glance) buttons: light in the light theme, dark in the dark one.
+   Zen does the opposite: light-dark(rgb(24, 24, 24), rgb(231, 231, 231)). The
+   background has no theme tint and the icon is opaque: Firefox's default styles
+   draw button icons at 0.7 opacity, which washes the blue out on white.
+   The close confirmation (waitconfirmation) keeps its red background. */
+@media -moz-pref("mod.arclook.glance-light-buttons") {
+  .zen-glance-sidebar-container toolbarbutton:not([waitconfirmation]) {
+    background: light-dark(rgb(255, 255, 255), rgb(24, 24, 24)) !important;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15) !important;
+    /* Vivid blue, as in Arc, instead of the macOS accent color (#1683ff).
+       A custom color can be set in the mod settings. */
+    color: var(--mod-arclook-glance-icon-color, light-dark(rgb(43, 37, 255), rgb(143, 139, 255))) !important;
+
+    &:hover {
+      background: light-dark(rgb(240, 240, 240), rgb(41, 41, 41)) !important;
+    }
+
+    & .toolbarbutton-icon {
+      fill: currentColor !important;
+      fill-opacity: 1 !important;
+    }
+  }
+}
+
+/* Arc-like Peek (Glance) window: rounded corners and space at the bottom. Zen sets
+   the height (height: 100%) inline and animates it from script, so the padding
+   goes on the parent: 100% gets smaller and the animation keeps working. */
+@media -moz-pref("mod.arclook.glance-rounded") {
+  .browserSidebarContainer.zen-glance-overlay {
+    padding-bottom: 12px !important;
+
+    & > .browserContainer:not([fade-out="true"]),
+    & > .browserContainer:not([fade-out="true"]) > .browserStack {
+      border-radius: 10px !important;
+    }
+  }
+}
+
+/* Ctrl+Tab panel as in Arc: a compact opaque card with small previews, the site
+   icon next to the title and the selected tab tinted lavender.
+   Firefox sizes the panel to most of the screen, so the panel itself stays
+   transparent and the previews grid, sized to its content, draws the card.
+   Sizes are measured from Arc's own panel. */
+@media -moz-pref("mod.arclook.ctrltab-panel") {
+  #ctrlTab-panel {
+    --panel-background-color: transparent !important;
+    --panel-border-color: transparent !important;
+    /* Room for the card's shadow inside the popup */
+    --panel-padding: 40px !important;
+    --panel-text-color: light-dark(#494949, rgb(241, 240, 245)) !important;
+    font-weight: 600 !important;
+  }
+  #ctrlTab-panel::part(content) {
+    align-items: center !important;
+    overflow: visible !important;
+  }
+  #ctrlTab-previews {
+    width: max-content !important;
+    margin-inline: auto !important;
+    grid-template-columns: repeat(var(--ctrlTab-previews-per-row), auto) !important;
+    gap: 0 !important;
+    padding: 15px !important;
+    border-radius: 22px !important;
+    background: light-dark(rgb(248, 248, 248), rgb(40, 39, 48)) !important;
+    box-shadow: 0 0 0 1px light-dark(#a4a4a4, rgba(255, 255, 255, .16)), 0 10px 30px -8px rgba(0, 0, 0, .4) !important;
+  }
+  .ctrlTab-preview,
+  #ctrlTab-showAll {
+    text-shadow: none !important;
+  }
+  .ctrlTab-preview-inner {
+    display: grid !important;
+    grid-template-columns: 16px minmax(0, 1fr) !important;
+    align-items: center !important;
+    column-gap: 9px !important;
+    margin-top: 0 !important;
+    padding: 12px 12px 12px !important;
+    border: 0 !important;
+    border-radius: 11px !important;
+  }
+  .ctrlTab-canvas {
+    grid-column: 1 / -1 !important;
+    margin-bottom: 11px !important;
+    border-radius: 8px !important;
+    overflow: hidden !important;
+    box-shadow: 0 1px 10px rgba(0, 0, 0, .22) !important;
+  }
+  .ctrlTab-canvas > img,
+  .ctrlTab-canvas > canvas {
+    width: 157px !important;
+    height: auto !important;
+  }
+  .ctrlTab-favicon-container {
+    justify-content: center !important;
+  }
+  .ctrlTab-favicon[src] {
+    width: 16px !important;
+    height: 16px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 3px !important;
+    background: none !important;
+  }
+  /* A zero width that grows to the cell keeps a long title from widening the card */
+  .ctrlTab-label {
+    font-size: 14px !important;
+    line-height: 18px !important;
+    text-align: start !important;
+    margin: 0 !important;
+    width: 0 !important;
+    min-width: 100% !important;
+  }
+  .ctrlTab-preview:focus > .ctrlTab-preview-inner {
+    background-color: light-dark(rgb(196, 198, 250), rgba(124, 114, 255, .4)) !important;
+    color: light-dark(#000, #fff) !important;
+  }
+  /* Arc has no "show all tabs" button under the previews */
+  #ctrlTab-showAll-container {
+    display: none !important;
+  }
+}

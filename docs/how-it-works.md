@@ -1,0 +1,217 @@
+# How Arc to Zen works
+
+Implementation notes behind the [README](../README.md): which files are read and
+written, how each part of Arc maps onto Zen, and how to build the app.
+
+## Reading Arc
+
+The migrator only reads Arc's files; nothing in Arc is changed.
+
+- Spaces, tabs, folders and Essentials come from `StorableSidebar.json` in the
+  Arc data folder; Arc's internal pages are mapped to Zen pages (`arc://downloads`
+  → `about:downloads`, `arc://settings` → `about:preferences`,
+  `arc://extensions` → `about:addons`, passwords → `about:logins`). Arc for
+  Windows, which keeps no synced copy of the spaces, has them read from the
+  sidebar itself. The tabs of a split view come in its place, side by side.
+- Cookies and passwords are read from Arc's SQLite databases with
+  `mode=ro&immutable=1`, without locks. Changes Arc has not flushed to disk yet
+  (Chromium writes cookies about every 30 seconds) are not seen.
+- localStorage and boosts are Chromium LevelDB stores, parsed in pure Python
+  from both the table (`.ldb`) and log (`.log`) files. If Arc compacts a store
+  while it is read, the step can fail; running again helps.
+- Arc for Windows opens `Network/Cookies` and the boosts' Firestore cache
+  without letting other programs read them, so while it runs those two can't be
+  read at all. The app finds `Arc.exe` and, with Close Arc if needed, posts
+  `WM_CLOSE` to its windows and waits up to 15 seconds for it to quit.
+
+## Backup and rollback
+
+`snapshot.py` copies the whole Zen profile into
+`<profile>/arc-to-zen-backup-<time>/` before the first step, except caches,
+telemetry and plugins Zen rebuilds (`cache2`, `startupCache`, `datareporting`,
+`gmp-*`, …), Zen's lock files, earlier backups, and sites' storage other than
+localStorage. A manifest records what existed, so a rollback also deletes what
+the run created. Folders a step deletes (a removed container's site data) are
+moved into the backup first. In the app one backup covers every run on that
+profile from the window.
+
+## Containers
+
+Every Arc profile behind a migrated space becomes a Zen container with the same
+name as the Arc profile, so the unrenamed default profile becomes `Default`.
+Other profiles that still have Chromium's generated name ("Person 2") are named
+after their first space instead. Containers that already exist are reused by
+name, including the built-in `Personal` and `Work`. Each migrated workspace gets
+that container as its default, and its tabs and Essentials move into it.
+
+A clean rebuild (`--nuke`, Replace Zen's contents) also removes containers no
+migrated Arc profile uses, such as the built-in `Banking` and `Shopping`,
+together with their cookies, site permissions, and site storage (localStorage,
+IndexedDB).
+
+## Cookies
+
+On macOS the Arc cookie key comes from the Keychain item `Arc Safe Storage`
+(`ARC_SAFE_STORAGE_PASSWORD` overrides it for tests). On Windows it is the
+DPAPI-protected `os_crypt.encrypted_key` in Arc's `User Data/Local State`, and
+values are AES-256-GCM (`v10`, a 12-byte nonce, the ciphertext and tag). Only
+persistent, unexpired, unpartitioned cookies are copied into `cookies.sqlite`
+with the container's `userContextId`; existing Zen cookies with the same name,
+host, path, and container are overwritten. Session cookies are skipped.
+
+## Passwords
+
+Arc's `Login Data` and `Login Data For Account` are decrypted with the same key,
+then Zen is started headless on the target profile for a few seconds so Zen
+encrypts the logins with its own key. Passwords never touch the disk in plain
+text. Logins that already exist for the same site, auth kind, and username are
+skipped; "never save" entries and federated sign-ins are not copied.
+
+## localStorage
+
+Values from Arc's `Local Storage/leveldb` are written through a headless Zen
+into the container of each profile, so they land in Zen's own format. Only web
+sites (`http`/`https`) are copied, keys a site already has in Zen are kept, and
+values over Zen's per-site quota (5 MB) are skipped. IndexedDB and Session
+Storage are not migrated: converting Chromium's IndexedDB format is fragile, and
+sites re-download that data themselves.
+
+## Boosts
+
+Arc keeps boosts in its account data; the migrator reads the local Firestore
+cache in `firestore/Arc` next to the Arc data folder
+(`~/Library/Application Support/firestore/Arc` on macOS) and adds each boost to
+`zen-boosts.jsonlz4` for the same host, with its CSS, name, and zap selectors.
+A boost active in Arc becomes the active Zen boost for its site unless Zen
+already has one active there. Re-running updates the same boosts instead of
+duplicating them.
+
+## Air Traffic Control
+
+Arc rules that open matching links in a specific space
+(`StorableLinkRouting.json`, macOS only: Arc for Windows has no Air Traffic
+Control) become Zen Space Routing routes to the workspace with the same name.
+"Contains" and regex conditions map directly, "is" maps to Zen's "equal to", and
+"starts/ends with" become a regex; a rule with several URL conditions becomes
+one regex that requires all of them. Rules that open links in the most recent
+space need no route, since that is Zen's default.
+
+## Bug reports
+
+`diagnostics.py` builds the report for **Report it on GitHub…**. Every run's log
+starts with the app, OS, Python, Qt, Arc and Zen versions (Arc's from
+`Arc.app/Contents/Info.plist` on macOS and from the
+`TheBrowserCompany.Arc_<version>` folder next to its data on Windows; Zen's from
+`compatibility.ini`), the Arc and Zen folders and the items on and off, and
+every step ends with how long it took. A failure adds the traceback, also when a
+step catches the error itself and logs a `❌` line (the traceback comes on lines
+of its own, so the window's note under the step stays short), and a headless Zen
+that fails leaves the last 40 lines of its output. A failed rollback logs its
+traceback too. The report is a zip of:
+
+- `report.md`: versions, the run's options (names only, the number of spaces),
+  each step and how it ended, the error and the traceback;
+- `log.txt`: the log;
+- `files.txt`: the Arc and Zen files involved with their sizes and whether they
+  can be read (a running Arc for Windows locks some), and the shape of
+  `StorableSidebar.json`: item kinds and counts, never names or addresses.
+
+Every text goes through `Sanitizer.clean()`: the home folder becomes `~`, and
+`APPDATA`, `LOCALAPPDATA`, `TEMP`, `HOMESHARE` and OneDrive folders kept
+elsewhere become `%NAME%`. Paths match with either slash, doubled backslashes,
+`\\?\` and URL-encoded separators, in any case, and the 8.3 short form of the
+home folder. The organisation after `OneDrive - ` is dropped. The user, computer
+and domain names, the macOS full name, e-mail addresses and Windows SIDs become
+placeholders, space and profile names become `<space N>` and `<profile N>`
+(Chromium's `Default` and `Profile N` stay), and web addresses keep only their
+site. A report that still holds the user, the computer or a replaced path is not
+written. The issue link fills in the fields of `.github/ISSUE_TEMPLATE/migration.yml`
+(Problem with a migration; `general.yml`, Something else, is for everything else);
+GitHub can't attach a file through a link, so the user drags the report in.
+
+## Zen settings
+
+- **Arc Look mod** (`src/arc2zen/mods/arc-look`): container line on the left of
+  tabs and none on Essentials, a 32 px top bar, an address bar sized to the URL
+  (up to 640 px) without a background, light Peek buttons, a rounded Peek
+  window, and an Arc-like Ctrl+Tab panel. The migrator installs it, rebuilds
+  Zen's mod stylesheet, sets the mod's default settings, and sets
+  `zen.urlbar.behavior = float`.
+- **Sidebar**: `sidebarMode = noChrome` in `StorableWindows.json` (a hidden Arc
+  sidebar) sets `zen.view.compact.enable-at-startup = true`; a shown sidebar
+  sets it to `false`.
+- **Toolbars**: `topBarURLEnabled` in
+  `~/Library/Preferences/company.thebrowser.Browser.plist` sets
+  `zen.view.use-single-toolbar = false`; otherwise `true`. Arc for Windows
+  always shows the URL in a top bar, so there it is always `false`.
+- Without Arc (Just the look, `--look-only`) both follow a fresh Arc:
+  compact mode off, and a single toolbar on macOS or multiple toolbars on
+  Windows (`ARC_DEFAULT_LAYOUT`).
+- **Drag-to-split**: `zen.splitView.drag-over-split-threshold = 15` and
+  `zen.splitView.drag-over-split-delayMC = 250`.
+- **Peek on Shift-click**: `zen.glance.activation-method = "shift"`, as in Arc;
+  Zen opens Glance on Option-click (Alt-click on Windows) by default.
+- **Ctrl+Tab**: `browser.ctrlTab.sortByRecentlyUsed = true`, so Ctrl+Tab goes
+  to the tab used before, as in Arc. Zen binds Ctrl+Shift+Tab to "show all
+  tabs" (`key_showAllTabs` in `zen-keyboard-shortcuts.json`); that shortcut is
+  turned off so Ctrl+Shift+Tab steps back through the panel. A profile Zen has
+  never started has no such file yet and keeps the binding.
+
+## Languages
+
+Zen keeps one set of language settings, so they come from Arc's first profile
+(`User Data/Default/Preferences`):
+
+- `intl.accept_languages` from Arc's preferred languages for sites;
+- `browser.translations.neverTranslateLanguages` /
+  `alwaysTranslateLanguages` from the languages Arc never or always translates;
+- `spellchecker.dictionary` from Arc's spellcheck dictionaries that Zen has
+  (it ships only English (US); others come as dictionary add-ons);
+- `intl.locale.requested = ""` and `intl.regional_prefs.use_os_locales = true`,
+  so Zen follows the system as Arc does, or on macOS the language picked for
+  Arc alone in System Settings (`AppleLanguages` in Arc's preferences).
+
+## Finding profiles
+
+Common roots:
+
+- Arc macOS: `~/Library/Application Support/Arc`
+- Arc Windows: `%LOCALAPPDATA%\Packages\TheBrowserCompany.Arc_*\LocalCache\Local\Arc`
+- Zen macOS: `~/Library/Application Support/zen`
+- Zen Windows: `%APPDATA%\zen`
+- Zen Linux: `~/.zen` or the Zen Flatpak profile directory
+
+Zen profile resolution uses explicit selection first, then `ZEN_PROFILE_PATH`,
+`ZEN_PROFILE_NAME`, Zen defaults from `installs.ini` / `profiles.ini`, and
+finally the first profile containing `zen-sessions.jsonlz4`. Arc desktop on
+Linux is not auto-detected because Arc desktop exists for macOS and Windows only.
+
+## Building
+
+Build a native package for the current OS:
+
+```bash
+pip install -e ".[build]"
+python scripts/build_desktop.py --version dev
+```
+
+`python scripts/render_readme_screenshot.py` renders the app window into
+`docs/app-screenshot.png`.
+
+## Releasing
+
+1. Set `__version__` in `src/arc2zen/__init__.py`; `pyproject.toml` takes the
+   version from there.
+2. Add a `## v<version> — <date>` section to `CHANGELOG.md`.
+3. Push the tag `v<version>`.
+
+GitHub Actions then checks that the tag matches the version and takes the
+release notes from that section, adding a link to the diff from the previous
+tag (`scripts/release_notes.py`). It builds the app for macOS (Apple Silicon
+and Intel) and Windows and creates a draft release with the archives and
+`SHA256SUMS.txt`. Check the draft on the Releases page and publish it there.
+Running the workflow again for the same tag replaces the archives and the
+notes.
+
+On every push CI compiles the sources and, on macOS and Windows, imports every
+module and opens the app window off screen (`scripts/check_desktop.py`).
