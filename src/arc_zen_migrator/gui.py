@@ -11,6 +11,7 @@ from arc2zen.profile_paths import discover_zen_profiles
 from .zen2arc.reader import inspect_zen
 from .zen2arc.report import write_report
 from .zen2arc.planner import plan_zen_to_arc
+from .zen2arc.export import export_bookmarks
 from .zen2arc.capabilities import ZEN_TO_ARC
 
 class MigratorWindow(QMainWindow):
@@ -51,6 +52,9 @@ class MigratorWindow(QMainWindow):
         self.export_button = QPushButton('Save privacy-safe preview…')
         self.export_button.clicked.connect(self.export_preview)
         actions.addWidget(self.export_button)
+        self.html_button = QPushButton("Export bookmarks for Arc…")
+        self.html_button.clicked.connect(self.export_html)
+        actions.addWidget(self.html_button)
         self.arc_button = QPushButton("Open upstream Arc → Zen GUI")
         self.arc_button.clicked.connect(self.open_upstream)
         actions.addWidget(self.arc_button)
@@ -69,6 +73,7 @@ class MigratorWindow(QMainWindow):
         reverse = self.direction.currentIndex() == 1
         self.preview_button.setEnabled(reverse)
         self.export_button.setEnabled(reverse)
+        self.html_button.setEnabled(reverse)
         self.arc_button.setEnabled(not reverse)
         self.output.setPlainText(
             "Zen → Arc currently supports read-only discovery.\n\n"
@@ -119,6 +124,27 @@ class MigratorWindow(QMainWindow):
             QMessageBox.warning(self, "Export unavailable", f"{type(exc).__name__}: {exc}")
             return
         QMessageBox.information(self, "Preview saved", "Privacy-safe report saved. {} tabs counted.".format(report["counts"]["tabs"]))
+
+    def export_html(self):
+        profile = Path(self.profile.currentText())
+        path, _ = QFileDialog.getSaveFileName(self, "Export bookmarks for manual Arc import", "zen-bookmarks.html", "HTML (*.html)")
+        if not path:
+            return
+        try:
+            inv = inspect_zen(profile)
+            selected = {self.spaces.item(i).data(Qt.ItemDataRole.UserRole)
+                        for i in range(self.spaces.count())
+                        if self.spaces.item(i).checkState() == Qt.CheckState.Checked}
+            plan = plan_zen_to_arc(inv, selected_spaces=selected)
+            export_bookmarks(plan, Path(path),
+                             space_names={space.id: space.name for space in inv.spaces})
+        except (OSError, ValueError, RuntimeError, ImportError) as exc:
+            QMessageBox.warning(self, "Export unavailable", f"{type(exc).__name__}: {exc}")
+            return
+        QMessageBox.information(self, "Bookmarks exported",
+            "Exported bookmarks for manual Arc import. This file contains private URLs and titles. "
+            "Import using Arc's bookmark import UI, then delete the file when finished. "
+            "Native Arc Spaces and pinned sidebar tabs are not created.")
 
     def open_upstream(self):
         self.upstream = UpstreamWindow()

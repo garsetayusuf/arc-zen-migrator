@@ -7,6 +7,7 @@ from .reader import inspect_zen
 from .planner import plan_zen_to_arc
 from .bookmarks import import_bookmarks
 from .report import summary
+from .export import export_bookmarks
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Zen → Arc preview and isolated testing")
@@ -14,6 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--space", action="append", default=None,
                         help="Select Zen Space ID; repeat for multiple Spaces")
     parser.add_argument("--preview", action="store_true", help="Print privacy-safe summary")
+    parser.add_argument("--export-bookmarks", type=Path, help="Export private Space-aware HTML bookmarks for manual Arc import")
     parser.add_argument("--test-bookmarks-profile", type=Path,
                         help="Isolated test copy with marker and existing Bookmarks file")
     parser.add_argument("--backup-dir", type=Path)
@@ -24,6 +26,11 @@ def main(argv: list[str] | None = None) -> int:
     report = summary(inventory)
     report["plan"] = {"unique_tabs": len(plan.tabs), "duplicates": plan.duplicate_count,
                       "excluded": plan.excluded_count, "status": plan.status}
+    if args.export_bookmarks:
+        export_bookmarks(plan, args.export_bookmarks,
+                         space_names={space.id: space.name for space in inventory.spaces})
+        report["export"] = {"status": "created", "format": "Netscape HTML",
+                            "note": "Contains private URLs and titles; import manually"}
     if args.test_bookmarks_profile:
         if args.backup_dir is None:
             parser.error("--backup-dir required for isolated test import")
