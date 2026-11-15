@@ -37,7 +37,7 @@ class Inventory:
 def read_mozlz4(path: Path) -> dict:
     import lz4.block
     with path.open("rb") as stream:
-        if stream.read(8) != b"mozLz40\\x00".replace(b"\\x00", b"\x00"):
+        if stream.read(8) != b"mozLz40\x00":
             raise ValueError("Invalid Mozilla LZ4 header")
         raw_size = stream.read(4)
         if len(raw_size) != 4:
