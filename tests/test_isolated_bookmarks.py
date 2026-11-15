@@ -48,6 +48,18 @@ class IsolatedImportTests(unittest.TestCase):
             import_bookmarks(self.plan, self.profile, self.backups)
 
     @patch("arc_zen_migrator.zen2arc.bookmarks.require_browsers_closed")
+    def test_live_arc_directory_is_rejected(self, guard):
+        from unittest.mock import patch as mock_patch
+        home = self.root / "fake-home"
+        live = home / "Library" / "Application Support" / "Arc" / "Default"
+        live.mkdir(parents=True)
+        (live / MARKER).touch()
+        (live / "Bookmarks").write_bytes(self.file.read_bytes())
+        with mock_patch("arc_zen_migrator.zen2arc.bookmarks.Path.home", return_value=home):
+            with self.assertRaises(PermissionError):
+                import_bookmarks(self.plan, live, self.backups, confirm_isolated=True)
+
+    @patch("arc_zen_migrator.zen2arc.bookmarks.require_browsers_closed")
     def test_source_plan_is_unchanged(self, guard):
         (self.profile / MARKER).touch()
         before = self.plan
