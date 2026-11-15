@@ -60,14 +60,24 @@ def inspect_zen(profile: Path) -> Inventory:
     candidates = [profile / "sessionstore-backups" / "recovery.jsonlz4",
                   profile / "sessionstore-backups" / "recovery.baklz4",
                   profile / "sessionstore.jsonlz4"]
+    # Do not combine live sessions with stale recovery snapshots: that silently
+    # resurrects closed tabs and creates misleading migration plans.
+    # Recovery is a fallback only if the primary session contains no windows/tabs.
     docs = [data]
     warnings = []
-    for candidate in candidates:
-        if candidate.is_file():
+    if not data.get("windows") and not data.get("tabs"):
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
             try:
-                docs.append(read_mozlz4(candidate))
+                recovered = read_mozlz4(candidate)
             except (ValueError, OSError, json.JSONDecodeError):
                 warnings.append("An optional session file could not be read")
+                continue
+            if recovered.get("windows") or recovered.get("tabs"):
+                docs = [recovered]
+                warnings.append("Using recovery session because primary session is empty")
+                break
     def windows(doc):
         return doc.get("windows", []) if "windows" in doc else [doc]
     raw_spaces = []
