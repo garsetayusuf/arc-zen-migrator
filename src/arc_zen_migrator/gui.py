@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout
 from arc2zen.desktop import MainWindow as UpstreamWindow
 from arc2zen.profile_paths import discover_zen_profiles
 from .zen2arc.reader import inspect_zen
+from .zen2arc.report import write_report
 from .zen2arc.capabilities import ZEN_TO_ARC
 
 class MigratorWindow(QMainWindow):
@@ -41,6 +42,9 @@ class MigratorWindow(QMainWindow):
         self.preview_button = QPushButton("Preview Zen")
         self.preview_button.clicked.connect(self.preview)
         actions.addWidget(self.preview_button)
+        self.export_button = QPushButton('Save privacy-safe preview…')
+        self.export_button.clicked.connect(self.export_preview)
+        actions.addWidget(self.export_button)
         self.arc_button = QPushButton("Open upstream Arc → Zen GUI")
         self.arc_button.clicked.connect(self.open_upstream)
         actions.addWidget(self.arc_button)
@@ -58,6 +62,7 @@ class MigratorWindow(QMainWindow):
     def refresh(self):
         reverse = self.direction.currentIndex() == 1
         self.preview_button.setEnabled(reverse)
+        self.export_button.setEnabled(reverse)
         self.arc_button.setEnabled(not reverse)
         self.output.setPlainText(
             "Zen → Arc currently supports read-only discovery.\n\n"
@@ -81,6 +86,17 @@ class MigratorWindow(QMainWindow):
         lines.extend(["", "Unsupported: Arc sidebar writing, CloudKit, cookies, passwords"])
         lines.extend(f"Warning: {warning}" for warning in inv.warnings)
         self.output.setPlainText("\n".join(lines))
+
+    def export_preview(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save Zen preview report", "zen-preview.json", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            report = write_report(Path(self.profile.currentText()), Path(path))
+        except (OSError, ValueError, RuntimeError, ImportError) as exc:
+            QMessageBox.warning(self, "Export unavailable", f"{type(exc).__name__}: {exc}")
+            return
+        QMessageBox.information(self, "Preview saved", "Privacy-safe report saved. {} tabs counted.".format(report["counts"]["tabs"]))
 
     def open_upstream(self):
         self.upstream = UpstreamWindow()
