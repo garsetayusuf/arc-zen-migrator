@@ -33,6 +33,27 @@ class ZenSessionTests(unittest.TestCase):
         self.assertEqual(inv.essential_count, 1)
         self.assertTrue(inv.warnings)
 
+    def test_stale_recovery_does_not_resurrect_closed_tabs(self):
+        (self.profile / "sessionstore-backups").mkdir()
+        self.session("zen-sessions.jsonlz4", {
+            "windows": [{"spaces": [{"uuid": "work", "name": "Work"}],
+                         "tabs": [{"zenWorkspace": "work", "entries": [{"url": "https://current.example"}]}]}]})
+        self.session("sessionstore-backups/recovery.jsonlz4", {
+            "windows": [{"tabs": [{"entries": [{"url": "https://stale.example"}]}]}]})
+        inventory = inspect_zen(self.profile)
+        self.assertEqual(inventory.tab_count, 1)
+        self.assertEqual(inventory.orphan_tabs, [])
+
+    def test_recovery_fallback_when_primary_empty(self):
+        (self.profile / "sessionstore-backups").mkdir()
+        self.session("zen-sessions.jsonlz4", {})
+        self.session("sessionstore-backups/recovery.jsonlz4", {
+            "windows": [{"spaces": [{"uuid": "work", "name": "Work"}],
+                         "tabs": [{"zenWorkspace": "work", "entries": [{"url": "https://example.org"}]}]}]})
+        inventory = inspect_zen(self.profile)
+        self.assertEqual(inventory.tab_count, 1)
+        self.assertTrue(any("recovery" in warning.lower() for warning in inventory.warnings))
+
     def test_bad_signature(self):
         (self.profile / "zen-sessions.jsonlz4").write_bytes(b"wrong")
         with self.assertRaises(ValueError):

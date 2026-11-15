@@ -9,6 +9,7 @@ from arc2zen.desktop import MainWindow as UpstreamWindow
 from arc2zen.profile_paths import discover_zen_profiles
 from .zen2arc.reader import inspect_zen
 from .zen2arc.report import write_report
+from .zen2arc.planner import plan_zen_to_arc
 from .zen2arc.capabilities import ZEN_TO_ARC
 
 class MigratorWindow(QMainWindow):
@@ -78,9 +79,11 @@ class MigratorWindow(QMainWindow):
         except (OSError, ValueError, RuntimeError, ImportError) as exc:
             QMessageBox.warning(self, "Preview unavailable", f"{type(exc).__name__}: {exc}")
             return
+        plan = plan_zen_to_arc(inv)
         lines = [f"Spaces: {len(inv.spaces)}", f"Tabs: {inv.tab_count}",
                  f"Pinned: {inv.pinned_count}", f"Essentials: {inv.essential_count}",
-                 f"Groups: {inv.groups}", f"Orphan tabs: {len(inv.orphan_tabs)}", ""]
+                 f"Groups: {inv.groups}", f"Orphan tabs: {len(inv.orphan_tabs)}",
+                 f"Planned unique tabs: {len(plan.tabs)}", f"Duplicate entries: {plan.duplicate_count}", ""]
         for space in inv.spaces:
             lines.append(f"{space.name}: {len(space.tabs)} tabs, {len(space.folders)} folders")
         lines.extend(["", "Unsupported: Arc sidebar writing, CloudKit, cookies, passwords"])
