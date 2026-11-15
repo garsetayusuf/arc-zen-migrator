@@ -39,6 +39,13 @@ def import_bookmarks(plan: MigrationPlan, destination: Path, backup_root: Path, 
     if destination.is_symlink() or not destination.is_dir():
         raise ValueError("Destination must be an existing non-symlink test profile")
     destination = destination.resolve(strict=True)
+    # An opt-in marker is insufficient if accidentally placed in a live profile.
+    home = Path.home().resolve()
+    live_roots = [home / "Library" / "Application Support" / "Arc",
+                  home / "AppData" / "Local" / "Arc"]
+    for live in live_roots:
+        if destination == live or live in destination.parents:
+            raise PermissionError("Live Arc application data is never a valid test destination")
     if not (destination / MARKER).is_file():
         raise PermissionError("Missing isolated test-profile marker")
     bookmark_file = destination / BOOKMARKS
