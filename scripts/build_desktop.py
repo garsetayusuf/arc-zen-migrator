@@ -15,8 +15,8 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-APP_NAME = "arc-to-zen"
-APP_DISPLAY_NAME = "Arc to Zen"
+APP_NAME = "arc-zen-migrator"
+APP_DISPLAY_NAME = "Arc Zen Migrator"
 ASSETS_DIR = REPO_ROOT / "assets"
 
 
@@ -48,6 +48,9 @@ def icon_path() -> Path:
 
 
 def run_pyinstaller(label: str) -> Path:
+    # Rebuild upstream icons from the tracked SVG when binary assets are absent.
+    if not icon_path().is_file() or not (ASSETS_DIR / "app-icon.png").is_file():
+        subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "generate_icon_assets.py")], cwd=REPO_ROOT, check=True)
     dist_dir = REPO_ROOT / "build" / "dist" / label
     work_dir = REPO_ROOT / "build" / "pyinstaller" / label
     spec_dir = REPO_ROOT / "build" / "pyinstaller" / "spec"
@@ -87,7 +90,7 @@ def run_pyinstaller(label: str) -> Path:
     if system_name() in {"darwin", "windows"}:
         command.insert(command.index("--name"), "--windowed")
     if system_name() == "darwin":
-        command.extend(["--osx-bundle-identifier", "io.github.nosefu.arc-to-zen"])
+        command.extend(["--osx-bundle-identifier", "io.github.garsetayusuf.arc-zen-migrator"])
 
     subprocess.run(command, cwd=REPO_ROOT, check=True)
 

@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "arc2zen"
+name = "arc-zen-migrator"
 dynamic = ["version"]
-description = "Migrate all Arc workspaces data into Zen."
+description = "Safety-first Arc and Zen desktop migration"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -25,9 +25,11 @@ build = [
 ]
 
 [project.scripts]
+arc-zen-migrator = "arc_zen_migrator.gui:main"
 arc2zen = "arc2zen.cli:main"
 
 [project.gui-scripts]
+arc-zen-migrator-desktop = "arc_zen_migrator.gui:main"
 arc2zen-desktop = "arc2zen.desktop:main"
 
 [tool.setuptools.dynamic]

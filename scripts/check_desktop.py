@@ -34,6 +34,12 @@ def main() -> int:
         window.preset_cards[preset].clicked.emit()
         app.processEvents()
     window.close()
+    from arc_zen_migrator.gui import MigratorWindow
+    reverse = MigratorWindow()
+    reverse.direction.setCurrentIndex(1)
+    reverse.show()
+    app.processEvents()
+    reverse.close()
     print(f"OK: {len(list(pkgutil.iter_modules(arc2zen.__path__)))} modules, window opened")
     return 0
 
