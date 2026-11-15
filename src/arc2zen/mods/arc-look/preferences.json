@@ -1,0 +1,58 @@
+[
+  {
+    "property": "mod.arclook.container-line-left",
+    "label": "Container line on the left of tabs",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.arclook.hide-essential-container-line",
+    "label": "No container line on Essentials",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.arclook.compact-toolbar",
+    "label": "Compact top bar (32px)",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.arclook.urlbar",
+    "label": "Arc-like address bar: sized to the URL, centered, no background",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.arclook.urlbar-max-width",
+    "label": "          maximum address bar width",
+    "type": "string",
+    "defaultValue": "640px",
+    "placeholder": "e.g. 640px or 50vw"
+  },
+  {
+    "property": "mod.arclook.glance-light-buttons",
+    "label": "Light Peek (Glance) buttons in the light theme",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.arclook.glance-icon-color",
+    "label": "          Peek icon color (empty: Arc's blue)",
+    "type": "string",
+    "defaultValue": "",
+    "placeholder": "e.g. #2b25ff or red"
+  },
+  {
+    "property": "mod.arclook.glance-rounded",
+    "label": "Peek window with rounded corners and bottom padding",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.arclook.ctrltab-panel",
+    "label": "Arc-like Ctrl+Tab panel",
+    "type": "checkbox",
+    "defaultValue": true
+  }
+]

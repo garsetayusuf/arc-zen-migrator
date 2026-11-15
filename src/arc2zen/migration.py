@@ -1,0 +1,570 @@
+"""Shared migration orchestration for the CLI and desktop app."""
+
+from __future__ import annotations
+
+import logging
+import sys
+import tempfile
+import time
+import traceback
+from dataclasses import dataclass, fields, replace
+from pathlib import Path
+from typing import Callable, Iterable
+
+from .arc_urls import convert_arc_url
+from .boosts import migrate_boosts
+from .containers import sync_containers
+from .cookies import migrate_cookies
+from .diagnostics import header_lines, run_lines
+from .link_routing import ARC_HAS_LINK_ROUTING, migrate_link_routing
+from .local_storage import migrate_local_storage
+from .arc_look_mod import install_arc_look_mod
+from .zen_settings import apply_zen_settings
+from .languages import migrate_languages
+from .passwords import migrate_passwords
+from .extract import ArcPinnedTabExtractor
+from .favicons import migrate_favicons
+from .folder_states import sync_folder_states
+from .profile_paths import is_zen_profile_in_use, resolve_arc_profile, resolve_zen_profile
+from .sessions import import_arc_export
+from .snapshot import Snapshot, set_active_snapshot
+from .tab_repair import repair_broken_tabs
+from .workspace_icons import sync_workspace_icons
+from .workspace_themes import sync_workspace_themes
+
+logger = logging.getLogger(__name__)
+
+LineCallback = Callable[[str], None]
+StepCallback = Callable[[int, int, str], None]
+SnapshotCallback = Callable[[Path], None]
+
+
+def use_utf8_output() -> None:
+    """Let the steps print emoji on Windows, where pipes, files and pythonw's streams use the ANSI code page."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+@dataclass(frozen=True)
+class MigrationOptions:
+    """Controls which Arc data is copied into the target Zen profile."""
+
+    arc_profile: str | Path | None = None
+    zen_profile: str | Path | None = None
+    export_file: str | Path | None = None
+    nuke: bool = False
+    favicons: bool = True
+    folder_states: bool = True
+    workspace_icons: bool = True
+    workspace_themes: bool = True
+    default_theme: bool = True
+    containers: bool = True
+    cookies: bool = False
+    passwords: bool = False
+    local_storage: bool = False
+    repair_tabs: bool = True
+    boosts: bool = True
+    link_routing: bool = True
+    arc_look_mod: bool = True
+    sidebar_mode: bool = True
+    toolbar_layout: bool = True
+    split_drag: bool = True
+    peek: bool = True
+    ctrl_tab: bool = True
+    website_languages: bool = True
+    interface_language: bool = True
+    skip_orphaned: bool = True
+    auto_close_zen: bool = True
+    # Arc space names to migrate; None migrates every space.
+    spaces: tuple[str, ...] | None = None
+    # Off for "just the look": no tabs, folders or workspaces are imported
+    import_tabs: bool = True
+    # Without Arc on this Mac the layout takes Arc's defaults instead of its settings
+    arc_defaults: bool = False
+
+
+# What "just the look" applies: Arc's space icons and colors, the Arc Look mod and Arc's layout
+LOOK_KEYS = ("workspace_icons", "workspace_themes", "default_theme",
+             "arc_look_mod", "sidebar_mode", "toolbar_layout", "split_drag", "peek", "ctrl_tab")
+# Space icons and colors come from Arc; the rest works without it
+ARC_LOOK_KEYS = ("workspace_icons", "workspace_themes", "default_theme")
+
+
+def arc_found(arc_profile: str | Path | None) -> bool:
+    try:
+        resolve_arc_profile(arc_profile)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def look_only(options: MigrationOptions) -> MigrationOptions:
+    """The same run cut down to how Zen looks: tabs, spaces and sign-ins in Zen stay as they are."""
+    keep = {"auto_close_zen", *LOOK_KEYS}
+    changes = {f.name: False for f in fields(options) if isinstance(getattr(options, f.name), bool) and f.name not in keep}
+    if not arc_found(options.arc_profile):
+        changes.update({key: False for key in ARC_LOOK_KEYS})
+        changes["arc_profile"] = None
+        changes["arc_defaults"] = True
+    return replace(options, **changes)
+
+
+@dataclass(frozen=True)
+class MigrationStep:
+    title: str
+    operation: Callable[[], bool]
+
+
+class CallbackLogHandler(logging.Handler):
+    """Forwards package log records to the desktop progress window."""
+
+    def __init__(self, emit_line: LineCallback):
+        super().__init__(logging.INFO)
+        self.emit_line = emit_line
+        self.setFormatter(logging.Formatter("%(message)s"))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            # The traceback goes on lines of its own: the window takes a "❌" line as the step's note
+            message = record.getMessage()
+            if message:
+                self.emit_line(message)
+            if record.exc_info:
+                self.emit_line(self.formatter.formatException(record.exc_info))
+        except Exception:
+            self.handleError(record)
+
+
+def _report(emit_line: LineCallback | None, line: str) -> None:
+    if emit_line:
+        emit_line(line)
+    else:
+        logger.info(line)
+
+
+def is_orphaned_space(space) -> bool:
+    return space.space_id == "orphaned-essential-tabs" or space.space_name == "Orphaned"
+
+
+def list_arc_spaces(arc_profile: str | Path | None = None, include_orphaned: bool = False) -> list[str]:
+    """Return Arc space names in sidebar order, as the migration would see them."""
+    extract_logger = logging.getLogger(ArcPinnedTabExtractor.__module__)
+    old_level = extract_logger.level
+    extract_logger.setLevel(logging.WARNING)
+    try:
+        extractor = ArcPinnedTabExtractor(arc_profile)
+        arc_spaces = extractor.extract_pinned_tabs(include_orphaned=include_orphaned)
+    finally:
+        extract_logger.setLevel(old_level)
+
+    names = []
+    for space in arc_spaces:
+        if not include_orphaned and is_orphaned_space(space):
+            continue
+        if space.space_name not in names:
+            names.append(space.space_name)
+    return names
+
+
+def filter_arc_spaces(arc_spaces: list, spaces: Iterable[str] | None, emit_line: LineCallback | None = None) -> list:
+    """Keep only the Arc spaces whose names were selected."""
+    if spaces is None:
+        return arc_spaces
+
+    selected = set(spaces)
+    available = [space.space_name for space in arc_spaces]
+    unknown = sorted(selected - set(available))
+    if unknown:
+        raise RuntimeError(
+            f"Unknown Arc spaces: {', '.join(unknown)}. Available: {', '.join(available)}"
+        )
+
+    skipped = [space for space in arc_spaces if space.space_name not in selected]
+    if skipped:
+        skipped_tabs = sum(len(space.pinned_tabs) for space in skipped)
+        _report(
+            emit_line,
+            f"Skipped {len(skipped)} unselected spaces ({skipped_tabs} tabs): "
+            + ", ".join(space.space_name for space in skipped),
+        )
+    return [space for space in arc_spaces if space.space_name in selected]
+
+
+def convert_arc_only_urls(arc_spaces: list, emit_line: LineCallback | None = None) -> None:
+    """Point Arc internal pages at their Zen counterparts and drop tabs Zen cannot open."""
+    converted = 0
+    dropped = []
+    for space in arc_spaces:
+        kept = []
+        for tab in space.pinned_tabs:
+            url = convert_arc_url(tab.url)
+            if url is None:
+                dropped.append(tab.url.split("?", 1)[0])
+                continue
+            if url != tab.url:
+                tab.url = url
+                converted += 1
+            kept.append(tab)
+        space.pinned_tabs = kept
+
+    if converted:
+        _report(emit_line, f"Converted {converted} Arc internal pages to Zen pages")
+    if dropped:
+        tabs = "1 tab" if len(dropped) == 1 else f"{len(dropped)} tabs"
+        _report(emit_line, f"⚠️ Skipped {tabs} Zen cannot open")
+        for url in dropped:
+            _report(emit_line, f"↳ {url}")
+
+
+def extract_arc_data(
+    arc_profile: str | Path | None,
+    export_file: str | Path,
+    emit_line: LineCallback | None = None,
+    skip_orphaned: bool = True,
+    spaces: Iterable[str] | None = None,
+) -> dict:
+    """Extract Arc sidebar data and write the intermediate JSON export."""
+    export_path = Path(export_file).expanduser()
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+
+    extractor = ArcPinnedTabExtractor(arc_profile)
+    arc_spaces = extractor.extract_pinned_tabs(include_orphaned=not skip_orphaned, fallback_space_names=spaces)
+    if not arc_spaces:
+        raise RuntimeError("No Arc tabs or folders found to migrate.")
+
+    if skip_orphaned:
+        orphaned_spaces = [space for space in arc_spaces if is_orphaned_space(space)]
+        arc_spaces = [space for space in arc_spaces if not is_orphaned_space(space)]
+        if orphaned_spaces:
+            skipped_tabs = sum(len(space.pinned_tabs) for space in orphaned_spaces)
+            _report(emit_line, f'Skipped "Orphaned" workspace ({skipped_tabs} tabs)')
+        if not arc_spaces:
+            raise RuntimeError('Only the "Orphaned" Arc workspace was found, and skipping it is enabled.')
+
+    arc_spaces = filter_arc_spaces(arc_spaces, spaces, emit_line)
+    if not arc_spaces:
+        raise RuntimeError("No Arc spaces selected to migrate.")
+
+    convert_arc_only_urls(arc_spaces, emit_line)
+
+    if not extractor.export_to_json(arc_spaces, export_path):
+        raise RuntimeError("Failed to write Arc export.")
+
+    summary = extractor.get_extraction_summary(arc_spaces)
+    _report(
+        emit_line,
+        "Extracted "
+        f"{summary['total_spaces']} spaces, "
+        f"{summary['total_pinned_tabs']} tabs, "
+        f"{summary['total_folders']} folders",
+    )
+    return summary
+
+
+def migration_steps(options: MigrationOptions, export_file: Path) -> list[MigrationStep]:
+    """Build the ordered migration step list for the selected options.
+
+    Steps make no backups of their own (create_backups=False): the run backs up
+    the whole profile before the first step.
+    """
+    steps = [] if not options.import_tabs else [
+        MigrationStep(
+            "Extract Arc sidebar data",
+            lambda: bool(
+                extract_arc_data(
+                    options.arc_profile,
+                    export_file,
+                    skip_orphaned=options.skip_orphaned,
+                    spaces=options.spaces,
+                )
+            ),
+        ),
+        MigrationStep(
+            "Import tabs, folders, workspaces, and session state",
+            lambda: import_arc_export(
+                zen_profile=options.zen_profile,
+                arc_export_file=export_file,
+                nuke=options.nuke,
+                create_backups=False,
+                space_names=options.spaces,
+            ),
+        ),
+    ]
+
+    optional_steps: Iterable[tuple[bool, MigrationStep]] = (
+        (
+            options.repair_tabs,
+            MigrationStep(
+                "Repair tabs with invalid URLs",
+                lambda: repair_broken_tabs(
+                    zen_profile=options.zen_profile,
+                    create_backups=False,
+                ),
+            ),
+        ),
+        (
+            options.favicons,
+            MigrationStep(
+                "Copy favicons",
+                lambda: migrate_favicons(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    export_file=export_file,
+                    create_backups=False,
+                ),
+            ),
+        ),
+        (
+            options.folder_states,
+            MigrationStep(
+                "Sync pinned-folder open/closed state",
+                lambda: sync_folder_states(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    create_backups=False,
+                    space_names=options.spaces,
+                ),
+            ),
+        ),
+        (
+            options.workspace_icons,
+            MigrationStep(
+                "Sync workspace icons",
+                lambda: sync_workspace_icons(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    create_backups=False,
+                    space_names=options.spaces,
+                ),
+            ),
+        ),
+        (
+            options.workspace_themes,
+            MigrationStep(
+                "Sync workspace themes",
+                lambda: sync_workspace_themes(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    create_backups=False,
+                    space_names=options.spaces,
+                    default_theme=options.default_theme,
+                ),
+            ),
+        ),
+        (
+            options.boosts,
+            MigrationStep(
+                "Copy Arc boosts",
+                lambda: migrate_boosts(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    create_backups=False,
+                ),
+            ),
+        ),
+        (
+            options.arc_look_mod,
+            MigrationStep(
+                "Install the Arc Look mod",
+                lambda: install_arc_look_mod(
+                    zen_profile=options.zen_profile,
+                    create_backups=False,
+                ),
+            ),
+        ),
+        (
+            options.sidebar_mode or options.toolbar_layout or options.split_drag or options.peek
+            or options.ctrl_tab,
+            MigrationStep(
+                "Apply Zen layout settings",
+                lambda: apply_zen_settings(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    create_backups=False,
+                    sidebar=options.sidebar_mode,
+                    toolbar=options.toolbar_layout,
+                    split_drag=options.split_drag,
+                    peek=options.peek,
+                    ctrl_tab=options.ctrl_tab,
+                    arc_defaults=options.arc_defaults,
+                ),
+            ),
+        ),
+        (
+            options.website_languages or options.interface_language,
+            MigrationStep(
+                "Copy language settings",
+                lambda: migrate_languages(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    create_backups=False,
+                    website=options.website_languages,
+                    interface=options.interface_language,
+                ),
+            ),
+        ),
+        (
+            options.link_routing and ARC_HAS_LINK_ROUTING,
+            MigrationStep(
+                "Copy Air Traffic Control rules to Space Routing",
+                lambda: migrate_link_routing(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    create_backups=False,
+                    space_names=options.spaces,
+                ),
+            ),
+        ),
+        (
+            options.containers,
+            MigrationStep(
+                "Assign Arc profiles to Zen containers",
+                lambda: sync_containers(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    export_file=export_file,
+                    create_backups=False,
+                    prune=options.nuke,
+                ),
+            ),
+        ),
+        (
+            options.cookies,
+            MigrationStep(
+                "Copy Arc profile cookies into Zen containers",
+                lambda: migrate_cookies(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    export_file=export_file,
+                    create_backups=False,
+                ),
+            ),
+        ),
+        (
+            options.local_storage,
+            MigrationStep(
+                "Copy Arc profile localStorage into Zen containers",
+                lambda: migrate_local_storage(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    export_file=export_file,
+                    create_backups=False,
+                ),
+            ),
+        ),
+        (
+            options.passwords,
+            MigrationStep(
+                "Copy Arc profile passwords into Zen",
+                lambda: migrate_passwords(
+                    arc_profile=options.arc_profile,
+                    zen_profile=options.zen_profile,
+                    export_file=export_file,
+                    create_backups=False,
+                ),
+            ),
+        ),
+    )
+    steps.extend(step for enabled, step in optional_steps if enabled)
+    return steps
+
+
+def ensure_zen_profile_free(zen_profile: str | Path | None) -> None:
+    """Refuse to write a Zen profile that a running Zen has open."""
+    profile = resolve_zen_profile(zen_profile)
+    if is_zen_profile_in_use(profile):
+        raise RuntimeError(f"Zen is running with this profile. Close it and try again: {profile}")
+
+
+def run_migration(
+    options: MigrationOptions,
+    emit_line: LineCallback | None = None,
+    on_step: StepCallback | None = None,
+    on_snapshot: SnapshotCallback | None = None,
+    snapshot_dir: str | Path | None = None,
+) -> bool:
+    """Run a complete Arc to Zen migration.
+
+    The Zen profile is backed up first, always; on_snapshot gets the backup folder,
+    which snapshot.rollback() restores. The steps themselves make no backups.
+    With snapshot_dir, a backup an earlier run took is kept instead, so rolling back
+    undoes both runs.
+    """
+    if options.export_file is not None:
+        export_path = Path(options.export_file).expanduser()
+        return _run_migration_with_export(options, export_path, emit_line, on_step, on_snapshot, snapshot_dir)
+
+    with tempfile.TemporaryDirectory(prefix="arc-to-zen-") as temp_dir:
+        export_path = Path(temp_dir) / "arc_pinned_tabs_export.json"
+        return _run_migration_with_export(options, export_path, emit_line, on_step, on_snapshot, snapshot_dir)
+
+
+class StepFailed(RuntimeError):
+    """A step that returned False; it has already logged why."""
+
+
+def _run_migration_with_export(
+    options: MigrationOptions,
+    export_file: Path,
+    emit_line: LineCallback | None,
+    on_step: StepCallback | None,
+    on_snapshot: SnapshotCallback | None,
+    snapshot_dir: str | Path | None = None,
+) -> bool:
+    ensure_zen_profile_free(options.zen_profile)
+    steps = migration_steps(options, export_file)
+    handler = CallbackLogHandler(emit_line) if emit_line else None
+    root_logger = logging.getLogger()
+
+    old_level = root_logger.level
+    if handler:
+        root_logger.addHandler(handler)
+        if old_level > logging.INFO:
+            root_logger.setLevel(logging.INFO)
+
+    try:
+        for line in header_lines(options.arc_profile, options.zen_profile) + run_lines(options):
+            _report(emit_line, line)
+        if snapshot_dir:
+            snapshot = Snapshot.load(snapshot_dir)
+            _report(emit_line, f"✅ Keeping the backup from before the first migration: {snapshot.root.name}")
+        else:
+            snapshot = Snapshot.take(resolve_zen_profile(options.zen_profile))
+        if on_snapshot:
+            on_snapshot(snapshot.root)
+        set_active_snapshot(snapshot)
+        for index, step in enumerate(steps, start=1):
+            if on_step:
+                on_step(index, len(steps), step.title)
+            _report(emit_line, f"\n[{index}/{len(steps)}] {step.title}")
+            started = time.monotonic()
+            result = step.operation()
+            _report(emit_line, f"   took {time.monotonic() - started:.1f} s")
+            if result is False:
+                raise StepFailed(f"{step.title} failed")
+    except StepFailed:
+        raise
+    except Exception:
+        # The window shows only the message; its log keeps where it came from. The CLI prints the traceback itself
+        if emit_line:
+            emit_line(traceback.format_exc().rstrip())
+        raise
+    finally:
+        set_active_snapshot(None)
+        if handler:
+            root_logger.removeHandler(handler)
+            root_logger.setLevel(old_level)
+
+    return True
+
+
+def nuke_zen_profile_only(zen_profile: str | Path | None = None, on_snapshot: SnapshotCallback | None = None) -> bool:
+    """Clear the target Zen profile without importing Arc data; the profile is backed up first."""
+    ensure_zen_profile_free(zen_profile)
+    snapshot = Snapshot.take(resolve_zen_profile(zen_profile))
+    if on_snapshot:
+        on_snapshot(snapshot.root)
+    if not import_arc_export(zen_profile=zen_profile, nuke=True, nuke_only=True, create_backups=False):
+        raise RuntimeError("Zen profile cleanup failed")
+    return True
