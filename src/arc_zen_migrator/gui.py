@@ -4,7 +4,8 @@ import sys
 from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout,
-    QLabel, QMainWindow, QMessageBox, QPushButton, QPlainTextEdit, QVBoxLayout, QWidget)
+    QLabel, QMainWindow, QMessageBox, QPushButton, QPlainTextEdit, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem)
 from arc2zen.desktop import MainWindow as UpstreamWindow
 from arc2zen.profile_paths import discover_zen_profiles
 from .zen2arc.reader import inspect_zen
@@ -36,6 +37,10 @@ class MigratorWindow(QMainWindow):
         browse.clicked.connect(self.browse)
         row.addWidget(browse)
         layout.addLayout(row)
+        layout.addWidget(QLabel('Zen Spaces to include (check desired Spaces; unchecked Spaces excluded):'))
+        self.spaces = QListWidget()
+        self.spaces.setMaximumHeight(130)
+        layout.addWidget(self.spaces)
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
         layout.addWidget(self.output, 1)
@@ -79,11 +84,25 @@ class MigratorWindow(QMainWindow):
         except (OSError, ValueError, RuntimeError, ImportError) as exc:
             QMessageBox.warning(self, "Preview unavailable", f"{type(exc).__name__}: {exc}")
             return
-        plan = plan_zen_to_arc(inv)
+        previous = {self.spaces.item(i).data(Qt.ItemDataRole.UserRole):
+                    self.spaces.item(i).checkState() == Qt.CheckState.Checked
+                    for i in range(self.spaces.count())}
+        self.spaces.clear()
+        for space in inv.spaces:
+            item = QListWidgetItem(space.name)
+            item.setData(Qt.ItemDataRole.UserRole, space.id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if previous.get(space.id, True) else Qt.CheckState.Unchecked)
+            self.spaces.addItem(item)
+        selected = {self.spaces.item(i).data(Qt.ItemDataRole.UserRole)
+                    for i in range(self.spaces.count())
+                    if self.spaces.item(i).checkState() == Qt.CheckState.Checked}
+        plan = plan_zen_to_arc(inv, selected_spaces=selected)
         lines = [f"Spaces: {len(inv.spaces)}", f"Tabs: {inv.tab_count}",
                  f"Pinned: {inv.pinned_count}", f"Essentials: {inv.essential_count}",
                  f"Groups: {inv.groups}", f"Orphan tabs: {len(inv.orphan_tabs)}",
-                 f"Planned unique tabs: {len(plan.tabs)}", f"Duplicate entries: {plan.duplicate_count}", ""]
+                 f"Planned unique tabs: {len(plan.tabs)}", f"Duplicate entries: {plan.duplicate_count}",
+                 f"Excluded tabs: {plan.excluded_count}", ""]
         for space in inv.spaces:
             lines.append(f"{space.name}: {len(space.tabs)} tabs, {len(space.folders)} folders")
         lines.extend(["", "Unsupported: Arc sidebar writing, CloudKit, cookies, passwords"])
